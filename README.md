@@ -8,6 +8,15 @@ Pipeline execution status analyzer for Unix shell commands.
 
 ## Installation
 
+### Homebrew
+
+```bash
+brew tap hmirin/tools
+brew install pipecheck
+```
+
+### GitHub
+
 ```bash
 # Clone the repository
 git clone https://github.com/hmirin/pipecheck.git
