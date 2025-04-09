@@ -1,0 +1,194 @@
+#!/usr/bin/env bash
+#
+# pipecheck: Pipeline execution status analyzer (Bash/Zsh compatible)
+#
+# Usage:
+#   pipecheck "cat file.txt | grep pattern | wc -l"
+
+# Shell detection
+if [ -n "$ZSH_VERSION" ]; then
+  IS_ZSH=1
+  # Make Zsh behave more like Bash for array indexing
+  setopt KSH_ARRAYS 2>/dev/null || true
+else
+  IS_ZSH=0
+fi
+
+# Color settings
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Debug mode flag
+DEBUG=0
+
+# Show help message
+function show_help {
+  echo "pipecheck: Pipeline Execution Status Analyzer"
+  echo 
+  echo "Usage:"
+  echo "  Run and display results of a specified pipeline:"
+  echo "     pipecheck \"cat file.txt | grep pattern | wc -l\""
+  echo
+  echo "Options:"
+  echo "  -h, --help     Show this help message"
+  echo "  -d, --debug    Show debug information"
+  echo "  -v, --verbose  Show detailed information"
+  echo
+}
+
+# Get status code description
+function get_status_description {
+  local status=$1
+  
+  case $status in
+    0) echo "Success" ;;
+    1) echo "General error" ;;
+    2) echo "Misuse or syntax error" ;;
+    126) echo "Command not executable" ;;
+    127) echo "Command not found" ;;
+    128) echo "Invalid exit argument" ;;
+    129) echo "SIGHUP" ;;
+    130) echo "SIGINT (Ctrl+C)" ;;
+    131) echo "SIGQUIT" ;;
+    137) echo "SIGKILL" ;;
+    143) echo "SIGTERM" ;;
+    *) echo "Status code $status" ;;
+  esac
+}
+
+# Parse arguments
+VERBOSE=0
+PIPELINE_CMD=""
+
+while [[ "$#" -gt 0 ]]; do
+  case $1 in
+    -h|--help) show_help; exit 0 ;;
+    -d|--debug) DEBUG=1; shift ;;
+    -v|--verbose) VERBOSE=1; shift ;;
+    *) PIPELINE_CMD="$1"; shift ;;
+  esac
+done
+
+# Analyze pipeline execution
+function analyze_pipeline {
+  local cmd="$1"
+  local pipeline_steps=()
+  local statuses=()
+  
+  if [ -z "$cmd" ]; then
+    echo -e "${RED}Error: No pipeline command provided.${NC}"
+    echo "Usage: pipecheck \"command1 | command2 | ...\""
+    exit 1
+  fi
+  
+  # Run the specified command with proper status capture
+  if [ $VERBOSE -eq 1 ]; then
+    echo -e "${BLUE}Executing: $cmd${NC}"
+  fi
+  
+  # Create a temporary file for status output
+  local status_file=$(mktemp)
+  
+  # Create a temporary script that will run the command and save pipeline status
+  local tmp_script=$(mktemp)
+  chmod +x "$tmp_script"
+  
+  if [ "$IS_ZSH" -eq 1 ]; then
+    echo "#!/usr/bin/env zsh" > "$tmp_script"
+    echo "$cmd" >> "$tmp_script"
+    echo "echo \${pipestatus[@]} > \"$status_file\"" >> "$tmp_script"
+  else
+    echo "#!/usr/bin/env bash" > "$tmp_script"
+    echo "$cmd" >> "$tmp_script"
+    echo "echo \${PIPESTATUS[@]} > \"$status_file\"" >> "$tmp_script"
+  fi
+  
+  # Execute the temporary script
+  "$tmp_script"
+  
+  # Read the status file
+  if [ -f "$status_file" ]; then
+    local status_text=$(cat "$status_file")
+    IFS=' ' read -ra statuses <<< "$status_text"
+    rm "$status_file"
+  fi
+  
+  # Clean up
+  rm "$tmp_script"
+  
+  # Extract pipeline parts
+  IFS='|' read -ra pipeline_steps <<< "$cmd"
+  
+  # Display debug information
+  if [ $DEBUG -eq 1 ]; then
+    echo "Detected pipeline: $cmd"
+    echo "Number of steps: ${#pipeline_steps[@]}"
+    echo "Status codes: ${statuses[*]}"
+  fi
+  
+  # Display results
+  echo -e "${BLUE}Pipeline Execution Status:${NC}"
+  echo "┌─────────┬──────────────┬───────────────────────────────────────────────────────────────"
+  echo "│ Step    │ Status       │ Command"
+  echo "├─────────┼──────────────┼───────────────────────────────────────────────────────────────"
+  
+  local total_steps=${#pipeline_steps[@]}
+  local failed=0
+  
+  for i in $(seq 0 $((total_steps - 1))); do
+    local step=$((i + 1))
+    local status=${statuses[$i]:-N/A}
+    local cmd_trim=$(echo "${pipeline_steps[$i]}" | sed 's/^ *//' | sed 's/ *$//')
+    
+    # Prepare status display
+    local status_color=$GREEN
+    local status_icon="✓"
+    local status_desc=$(get_status_description $status)
+    
+    if [ "$status" != "0" ]; then
+      status_color=$RED
+      status_icon="✗"
+      failed=1
+    fi
+    
+    # Maximum command display length
+    local max_cmd_length=60
+    local cmd_display=$cmd_trim
+    if [ ${#cmd_display} -gt $max_cmd_length ]; then
+      cmd_display="${cmd_display:0:$max_cmd_length}..."
+    fi
+    
+    echo -e "│ ${BLUE}$step${NC}       │ ${status_color}$status_icon $status${NC} $(printf '%*s' $((10 - ${#status})) '')│ $cmd_display"
+    
+    if [ $VERBOSE -eq 1 ]; then
+      echo -e "│         │              │ ${YELLOW}$status_desc${NC}"
+      
+      # Wrap display for long commands
+      if [ ${#cmd_trim} -gt $max_cmd_length ]; then
+        echo -e "│         │              │ ${YELLOW}Full command: $cmd_trim${NC}"
+      fi
+    fi
+  done
+  
+  # Summary and results
+  echo "└─────────┴──────────────┴───────────────────────────────────────────────────────────────"
+  
+  # Final results summary
+  if [ $failed -eq 1 ]; then
+    echo -e "${RED}Pipeline failed in some steps.${NC}"
+  else
+    echo -e "${GREEN}Pipeline succeeded in all steps.${NC}"
+  fi
+  
+  # Final output
+  echo -e "\n${BLUE}Final output:${NC}"
+  eval "$cmd"
+}
+
+# Main process
+analyze_pipeline "$PIPELINE_CMD"
+
+exit 0
